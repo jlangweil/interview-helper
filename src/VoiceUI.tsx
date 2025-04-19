@@ -41,6 +41,12 @@ interface Window {
   webkitSpeechRecognition?: new () => SpeechRecognition;
 }
 
+// For tracking processed segments to avoid duplicates
+interface ProcessedSegment {
+  text: string;
+  timestamp: number;
+}
+
 const VoiceUI: React.FC = () => {
   // State for voice recognition
   const [isListening, setIsListening] = useState<boolean>(false);
@@ -52,7 +58,9 @@ const VoiceUI: React.FC = () => {
   // State for technical questions
   const [detectedQuestions, setDetectedQuestions] = useState<TechnicalQuestion[]>([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(-1);
-  const [lastProcessedLength, setLastProcessedLength] = useState<number>(0);
+  
+  // Keep track of processed speech segments to avoid analyzing the same text twice
+  const [processedSegments, setProcessedSegments] = useState<ProcessedSegment[]>([]);
   
   // Refs
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -102,6 +110,21 @@ const VoiceUI: React.FC = () => {
         setError(errorMessage);
         setIsListening(false);
       };
+
+      // In the useEffect hook where we set up speech recognition
+      recognitionRef.current.onend = (event) => {
+        console.log('Recognition ended event fired');
+        // Only auto-restart if we're still supposed to be listening
+        if (isListening) {
+          try {
+            console.log('Auto-restarting recognition');
+            recognitionRef.current?.start();
+          } catch (err) {
+            console.error('Failed to restart recognition:', err);
+            setIsListening(false);
+          }
+        }
+      };
     }
     
     return () => {
@@ -130,13 +153,11 @@ const VoiceUI: React.FC = () => {
     }
     
     if (final) {
+      // This is a new final segment that needs to be processed
+      processNewSpeechSegment(final);
+      
       setTranscript(prev => {
-        const newTranscript = prev ? `${prev} ${final}` : final;
-        
-        // Check for technical questions in final transcript
-        detectTechnicalQuestions(newTranscript);
-        
-        return newTranscript;
+        return prev ? `${prev} ${final}` : final;
       });
       setInterimTranscript('');
     } else {
@@ -144,49 +165,148 @@ const VoiceUI: React.FC = () => {
     }
   };
 
-// Detect technical questions in the transcript
-const detectTechnicalQuestions = (text: string) => {
-  // Only analyze the new part of the transcript
-  const newText = text.length > lastProcessedLength 
-    ? text.substring(lastProcessedLength) 
-    : text;
-  
-  // Update the processed length
-  setLastProcessedLength(text.length);
-  
-  // Check if the new text is a technical question
-  const question = questionDetectorRef.current.createTechnicalQuestion(newText);
-  
-  if (question) {
-    console.log('Detected technical question:', question);
-    setDetectedQuestions(prev => {
-      // Avoid duplicates by checking if similar question already exists
-      const isDuplicate = prev.some(q => areSimilarQuestions(q.text, question.text));
+  // Process a new speech segment
+  const processNewSpeechSegment = (segment: string) => {
+    console.log('Processing new speech segment:', segment);
+    
+    // Check if we've processed this segment before
+    if (isSegmentProcessed(segment)) {
+      console.log('Segment already processed, skipping');
+      return;
+    }
+    
+    // Add this segment to processed segments
+    setProcessedSegments(prev => [...prev, { 
+      text: segment, 
+      timestamp: Date.now() 
+    }]);
+    
+    // Extract potential questions from the segment
+    const questions = extractQuestions(segment);
+    
+    console.log('Extracted questions:', questions);
+    
+    // If no questions were extracted but the segment might be a conversational query
+    if (questions.length === 0 && segment.length > 5) {
+      // Check if this might be a conversational query without question structure
+      if (mightBeConversationalQuery(segment)) {
+        analyzeQuestion(segment);
+      }
+    } else {
+      // Check each potential question
+      questions.forEach(questionText => {
+        // Only process questions with some minimum length
+        if (questionText.length > 5) {
+          analyzeQuestion(questionText);
+        }
+      });
+    }
+  };
+
+  // Check if text might be a conversational query without question structure
+  const mightBeConversationalQuery = (text: string): boolean => {
+    const conversationalPatterns = [
+      'tell me', 'explain', 'describe', 'show me', 'help me',
+      'i need', 'i want', 'give me', 'can you', 'please',
+      'how do', 'what is', 'what are', 'why is', 'why are'
+    ];
+    
+    const lowerText = text.toLowerCase().trim();
+    return conversationalPatterns.some(pattern => lowerText.includes(pattern));
+  };
+
+  const extractQuestions = (text: string): string[] => {
+    const result: string[] = [];
+    
+    // Split into sentences
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    
+    // Process each sentence
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim();
       
-      if (isDuplicate) {
-        return prev;
+      // Skip very short sentences
+      if (trimmed.length < 3) continue;
+      
+      // If it has a question mark, it's a question
+      if (text.includes(trimmed + '?')) {
+        result.push(trimmed + '?');
+        continue;
       }
       
-      const newQuestions = [...prev, question];
-      setCurrentQuestionIndex(newQuestions.length - 1);
-      return newQuestions;
-    });
-  }
-};
+      // Check for question starters and conversational patterns
+      const questionIndicators = [
+        'how', 'what', 'why', 'when', 'where', 'which', 'who', 'whose', 'whom',
+        'can', 'could', 'would', 'should', 'is', 'are', 'am', 'was', 'were',
+        'do', 'does', 'did', 'has', 'have', 'had', 'will', 'shall',
+        'tell me', 'explain', 'describe', 'show me', 'help me understand'
+      ];
+      
+      const lowerSentence = trimmed.toLowerCase();
+      
+      // Check if it starts with a question indicator
+      for (const indicator of questionIndicators) {
+        if (lowerSentence.startsWith(indicator) || 
+            lowerSentence.includes(' ' + indicator + ' ')) {
+          result.push(trimmed);
+          break;
+        }
+      }
+    }
+    
+    // If no sentences were identified as questions, but the text is reasonable length,
+    // treat the entire text as a potential question
+    if (result.length === 0 && text.trim().length > 0 && text.trim().length < 150) {
+      result.push(text.trim());
+    }
+    
+    return result;
+  };
 
+  // Check if a segment has already been processed to avoid duplicates
+  const isSegmentProcessed = (segment: string): boolean => {
+    return processedSegments.some(item => {
+      const similarity = calculateSimilarity(item.text, segment);
+      return similarity > 0.8; // 80% similarity threshold
+    });
+  };
+
+  // Calculate text similarity (0-1)
+  const calculateSimilarity = (a: string, b: string): number => {
+    const maxLength = Math.max(a.length, b.length);
+    if (maxLength === 0) return 1;
+    
+    const distance = levenshteinDistance(a.toLowerCase(), b.toLowerCase());
+    return 1 - distance / maxLength;
+  };
+
+  // Analyze a potential question
+  const analyzeQuestion = (questionText: string) => {
+    // Check if this is a technical question using the detector
+    const question = questionDetectorRef.current.createTechnicalQuestion(questionText);
+    
+    if (question) {
+      console.log('Detected technical question:', question);
+      
+      // Add to detected questions list
+      setDetectedQuestions(prev => {
+        // Avoid duplicates by checking if similar question already exists
+        const isDuplicate = prev.some(q => areSimilarQuestions(q.text, question.text));
+        
+        if (isDuplicate) {
+          return prev;
+        }
+        
+        const newQuestions = [...prev, question];
+        setCurrentQuestionIndex(newQuestions.length - 1);
+        return newQuestions;
+      });
+    }
+  };
 
   // Check if two questions are similar to avoid duplicates
   const areSimilarQuestions = (q1: string, q2: string): boolean => {
-    // Simple similarity check based on Levenshtein distance
-    const maxLength = Math.max(q1.length, q2.length);
-    if (maxLength === 0) return true;
-    
-    // Calculate Levenshtein distance
-    const distance = levenshteinDistance(q1.toLowerCase(), q2.toLowerCase());
-    const similarity = 1 - distance / maxLength;
-    
-    // Consider questions similar if they're at least 80% similar
-    return similarity > 0.8;
+    return calculateSimilarity(q1, q2) > 0.8; // 80% similarity threshold
   };
 
   // Simple Levenshtein distance implementation for text similarity
@@ -308,6 +428,7 @@ const detectTechnicalQuestions = (text: string) => {
     setTranscript('');
     setInterimTranscript('');
     setError('');
+    setProcessedSegments([]);
   };
 
   // Clear all questions

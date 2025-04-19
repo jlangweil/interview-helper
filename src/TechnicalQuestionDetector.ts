@@ -135,7 +135,7 @@ export interface DetectionResult {
       const confidence = this.calculateConfidence(isQuestionLike, keywordCount, cleanText.length);
       
       // Determine if this is a technical question based on confidence threshold
-      const isTechnical = confidence > 0.6;
+      const isTechnical = confidence > 0.3;
       
       return {
         isTechnical,
