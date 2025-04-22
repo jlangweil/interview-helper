@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './VoiceUI.css';
 import TechnicalQuestionDetector, { TechnicalQuestion } from './TechnicalQuestionDetector';
+import AnswerDisplay from './components/AnswerDIsplay'
 
 // Define types for our component
 interface RecognitionError extends Event {
@@ -67,6 +68,8 @@ const VoiceUI: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const questionDetectorRef = useRef<TechnicalQuestionDetector>(new TechnicalQuestionDetector());
+
+  const [apiKey, setApiKey] = useState<string>('');
   
   // Initialize speech recognition
   useEffect(() => {
@@ -494,6 +497,18 @@ const VoiceUI: React.FC = () => {
                 </label>
               </div>
             </div>
+
+            <div className="api-key-input">
+            <label className="source-label">OpenAI API Key:</label>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="sk-..."
+              className="api-key-field"
+              disabled={isListening}
+            />
+          </div>
             
             <div className="button-group">
               <button
@@ -511,7 +526,7 @@ const VoiceUI: React.FC = () => {
                 Clear All
               </button>
             </div>
-          </div>
+          </div>          
           
           <div className="transcript-panel">
             <h2 className="transcript-title">Transcription:</h2>
@@ -590,6 +605,10 @@ const VoiceUI: React.FC = () => {
                     <div>Confidence: {Math.round(detectedQuestions[currentQuestionIndex].confidence * 100)}%</div>
                   </div>
                 </div>
+                <AnswerDisplay 
+                  question={detectedQuestions[currentQuestionIndex]} 
+                  apiKey={apiKey} 
+                />
                 <div className="answer-placeholder">
                   <p>
                     Answer will appear here once we connect to an LLM service.
